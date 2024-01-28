@@ -1,0 +1,52 @@
+---
+title: "702publ.analysis"
+author: "Yordan Yordanov"
+date: "2024-01-28"
+output: html_document
+---
+
+Load packages
+```{r}
+#If some of the packages doesn't exist, you have to install it by install.packages() or BiocManager::install()
+library(tidyverse)
+```
+
+Load the A702 data
+```{r}
+# Data has been obtained from WoS Core Colection as Bibtex and then transformed with Bibliometrix package to the current form 
+tox <- readRDS(paste0("../input/","tox.RDS"))
+```
+
+Some data exploration
+```{r}
+dim(tox)
+
+summary(tox$PY)
+```
+
+
+
+Publications by yearhistogram
+```{r}
+#The hist could also be simply created with base:: packages: hist(tox$PY,breaks = 33)
+#However ggplot provides easy options for fine tunning the visuals.
+ggplot(tox, aes(PY))+
+    geom_histogram(color = "#000000", fill = "#0099F8", bins = 33) +
+      labs(
+    #title = "Histogram of...",
+   # subtitle = "Made by...",
+   # caption = "Source...",
+    x = "Година",
+    y = "Брой"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(color = "#0099F8", size = 16, face = "bold"),
+    plot.subtitle = element_text(size = 10, face = "bold"),
+    plot.caption = element_text(face = "italic")
+  )
+
+#saving the histogram
+ggsave(path="../output", filename="702hist_publbyyear.tiff", width = 1200, height = 900, dpi = 300, units = "px", device='png')
+
+```

@@ -1,0 +1,397 @@
+Load packages
+```{r results = "hide" }
+# Clear workspace
+rm(list=ls())
+#load general libraries
+library(tidyverse)
+```
+
+
+
+```{r}
+getwd()
+# List all the .csv files in the directory
+csv_files <- list.files(path = "../input", pattern = "\\.csv$")
+file <- character()
+
+# Loop through the list of .csv files and read them into variables
+for (file in csv_files) {
+  # Remove the file extension to use as the variable name
+  var_name <- sub("\\.csv", "", file)
+  # Read the .csv file into a variable with the same name
+  assign(var_name, read.csv(paste0("../input/",file)))
+}
+
+#Making the leftmost column rownames
+rownames(Articles)<-Articles$Document 
+Articles <-select(Articles, -Document)
+
+Articles<-Articles %>% mutate(keywords=paste(Discipline,Substance,Model.Study,Endpoint,Tool, ImAnalysis,sep=", "))
+
+
+```
+
+Preprocessing control to make sure there are no blank spaces at the start or end of each char string
+```{r}
+trim_spaces <- function(input) {
+  if (is.data.frame(input)) {
+    # Initialize DataFrame with the same number of rows
+    trimmed_df <- data.frame(matrix(ncol = ncol(input), nrow = nrow(input)))
+    colnames(trimmed_df) <- colnames(input)
+
+    # Apply trimming to each column of the DataFrame
+    for (col in names(input)) {
+      trimmed_df[[col]] <- if (is.character(input[[col]])) trimws(input[[col]]) else input[[col]]
+    }
+    
+    return(trimmed_df)
+  }else {
+    stop("Input must be a dataframe")
+  }
+}
+
+Classfull<-trim_spaces(Classfull)
+```
+
+
+
+Another form of object - list:
+```{r}
+Articlist <- Articles 
+# Split and convert to a list within the dataframe
+Articlist$keywords <- lapply(Articlist$keywords, function(x) strsplit(x, ",\\s*")[[1]])
+Articlist<-Articlist$keywords
+names(Articlist)<-rownames(Articles)
+```
+
+
+#Add all data from WoS
+```{r}
+#Import 
+tox <- readRDS(paste0("../input/","tox.RDS"))
+
+#try ma5ching
+all(rownames(Articles) %in% rownames(tox))
+#combine
+Artful <- merge(Articles,tox[rownames(Articles),], by = "row.names")
+
+```
+
+Remove unnecessary variables, except those we will use
+
+```{r}
+rm(list=setdiff(ls(), c("Classfull", "Artful", "Articlist")))
+```
+
+Preprocessing for analysis
+
+```{r}
+#If I want to add a second series of lists. 
+#Art2<-Articlist
+#Art2[["ClassInd"]] <- Articlist
+
+# Instead, I want to create two more twin char lists with terms
+Art3 <- mapply(function(char_vec, related_data) list(char_vec, related_data, related_data),
+                        Articlist, Articlist, SIMPLIFY = FALSE)
+
+rm(Articlist)
+
+```
+
+Open one by one keyterms and scan through the hierarchy to identify the class of the term and it's ID (row number in hierarchical classification table)
+```{r}
+#Load a thesaurus list of synonyms
+#thesaurus<-read.csv("../input/thesaurus.csv")
+#Create a function 
+scanli<- function (scannedimp,refclass){
+  scanned<-scannedimp
+  #Loop through every group of three related sublists
+  for (i in 1:length(scanned)){
+    #Loop through every string element of the char vector
+    for (j in 1:length(scanned[[i]][[1]])){
+      #first check if term is in thesaurus
+     if (any(which(thesaurus == scanned[[i]][[1]][[j]], arr.ind = TRUE))){}
+      #Serach through the reference hierarchical table and fill in first the class [[2]] and then index [[3]]
+      scanned[[i]][[2]][[j]]<-paste0("Class",which(refclass == scanned[[i]][[1]][[j]], arr.ind = TRUE)[2]) #the last index is for the columns - class
+      
+      scanned[[i]][[3]][[j]]<-which(refclass == scanned[[i]][[1]][[j]], arr.ind = TRUE)[1] #the last index is for the rows - id
+    }
+  }
+  return(scanned)
+}
+
+scannedimp<-Art3
+refclass<-Classfull
+
+length(Art3)
+Art3<-scanli(Art3,Classfull)
+```
+NB! Optional step: remove articles with "NO IMAGE ANALYSIS" (ID=144 in Classfull)
+```{r results = "hide" }
+#Anyway, ccheck ID
+which(Classfull == "no image analysis", arr.ind = TRUE)[,1]
+#OK, go on
+Art3_iman<-Art3
+Art3_garb <- list()
+report_noim<-data.frame()
+
+  for(i in 1:length(Art3)){
+    if(any(grepl(144,Art3[[i]][[3]]))){
+      
+      r<-nrow(report_noim)
+        Art3_iman<-Art3_iman[setdiff(names(Art3_iman), names(Art3)[i])]
+        report_noim[r+1,1]<-names(Art3)[i]
+      print(i)
+      
+      Art3_garb<-append(Art3[i],Art3_garb)
+    }
+    print(paste0("a",i))
+    }
+#Continue with only a List of Articles WITH Image Analysis
+Art3<-Art3_iman
+```
+
+
+Map the articles to IDs in classification now
+
+```{r}
+# Create a data.frame from the list of lists with named columns, excluding NA values
+Art4 <- do.call(rbind.data.frame, Art3)
+colnames(Art4)<-c("Term","Class","IDs") 
+Art4<-Art4[!is.na(Art4$IDs),]
+#check for empty spaces
+which(Art4$Term=="")
+which(Art4$Class=="")
+which(Art4$IDs=="")
+#Remove empty spaces, which I saw are only in the Terms column
+Art4<-Art4[-which(Art4$Term==""),]
+```
+
+Prepare the selection of columns for the articles table
+```{r}
+rownames(Artful)<-Artful$Row.names
+Artful<- Artful %>% mutate(keyIDs=keywords, keyClass=keywords) %>% select(TI, Year, Local.Citations, Normalized.Local.Citations, keywords, keyIDs, keyClass)
+```
+
+Explore classes - Explore First Class First
+```{r}
+# Creating a grouped summary table
+summary_table <- Classfull %>%
+  group_by(Class1) %>%
+  summarize(Count = n())
+
+# Print the summary table
+print(summary_table)
+```
+Explore classes - Explore Second Class 
+```{r}
+# Creating a grouped summary table
+summary_table2 <- Classfull[which(Classfull$Class1=="tool"),] %>%
+  group_by(Class2) %>%
+  summarize(Count = n())
+
+# Print the summary table
+print(summary_table2)
+```
+
+Explore classes - Explore Third Class 
+```{r}
+# Creating a grouped summary table
+summary_table3 <- Classfull[which(Classfull$Class2=="increased dimensionality imaging"),] %>%
+  group_by(Class3) %>%
+  summarize(Count = n())
+
+# Print the summary table
+print(summary_table3)
+```
+
+Explore classes - Explore 4th Class 
+```{r}
+# Creating a grouped summary table
+summary_table4 <- Classfull[which(Classfull$Class3=="open source"),] %>%
+  group_by(Class4) %>%
+  summarize(Count = n())
+
+# Print the summary table
+print(summary_table4)
+```
+
+Clear unnecessary data
+```{r}
+rm(list=setdiff(ls(), c("Classfull", "Artful", "Art3", "Art4")))
+```
+
+#Create final reports
+```{r}
+#Prepare article reference list
+Art5<-Art4 %>% mutate(Row.Names=gsub("\\..*","",rownames(.))) 
+Artful<- Artful %>% mutate(Row.Names=rownames(.))
+Art5<-merge(Art5, Artful, by = "Row.Names", all.x = TRUE) %>% select(Row.Names,IDs,Class,Term,Year,Normalized.Local.Citations,TI)
+#prepare major list to combine all data
+MajorClass<-"increased dimensionality imaging" #which column does it belong in the original hierarchical table
+MajorClassRank<-2
+cmd<-paste0("Subclasses<-unique(Classfull$Class",MajorClassRank+1,"[which(Classfull$Class",MajorClassRank,"==MajorClass)])")
+Subclasses<-eval(parse(text = cmd))
+
+ClassChoice<-list(Class1=MajorClass,Class2=Subclasses)
+#Add Sublists for IDs and Etc to ClassChoice Categories
+ClassChoice$Class2<-list(Term=ClassChoice$Class2, IDrange=as.list(ClassChoice$Class2),Title=as.list(ClassChoice$Class2),
+                         Citat.Norm=as.list(ClassChoice$Class2), Year=as.list(ClassChoice$Class2))
+
+#Make deeper hyerarchical level sublists in the format list
+for(z in 1:length(ClassChoice[["Class2"]])){
+      for(t in 1:length(ClassChoice[["Class2"]][[z]])){ 
+        ClassChoice[["Class2"]][[z]][[t]]<-list(ClassChoice[["Class2"]][[z]][[t]])
+        }}
+#Function to loop through and fill in the data
+idclass<-function(ClassChoice,Classfull,Art5){
+  
+     for (i in 1:length(ClassChoice[[2]][[1]])){
+       
+    cmd2<-paste0("ClassChoice[['Class2']][['IDrange']][[i]]<-which(Classfull$Class",MajorClassRank+1,"==ClassChoice[['Class2']][['Term']][[i]])")
+eval(parse(text = cmd2))  
+
+     }
+   for (i in 1:length(ClassChoice[[2]][[1]])){
+    for (j in 1:length(ClassChoice[["Class2"]][["IDrange"]][[i]])){
+     # ClassChoice[["Class2"]][[i]][[j]][[1]]<-as.list(ClassChoice[["Class2"]][[i]][[j]][[1]])
+    ClassChoice[["Class2"]][["Title"]][[i]][[j]]<-Art5$TI[which(Art5$IDs==ClassChoice[["Class2"]][["IDrange"]][[i]][[j]])]
+    print(paste0(i,":class ",j,":sub"))
+    
+    ClassChoice[["Class2"]][["Citat.Norm"]][[i]][[j]]<-Art5$Normalized.Local.Citations[which(Art5$IDs==ClassChoice[["Class2"]][["IDrange"]][[i]][[j]])]
+    
+    ClassChoice[["Class2"]][["Year"]][[i]][[j]]<-Art5$Year[which(Art5$IDs==ClassChoice[["Class2"]][["IDrange"]][[i]][[j]])]
+      }}
+  return(ClassChoice)
+}
+#Execute the function
+ClassChoice <- idclass(ClassChoice,Classfull,Art5)
+#Save data structure
+rio::export(ClassChoice,paste0("../input/","ClassChoice[[1]],".RDS"))
+
+```
+
+
+#Create stat summary:
+```{r}
+#Flatten:
+flat.extr<-function(ClassChoice){
+#Create a Empty DataFrame with 0 rows and n columns
+columns <- c("Term","Title","Year","Citat.Norm")
+flatdf <- data.frame(matrix(nrow = 0, ncol = length(columns))) 
+colnames(flatdf) <- columns
+#Now write the loop to extract info from the list and organize it in the flat df
+  for(i in 1:length(ClassChoice[[2]][[2]])){
+    
+    for(j in 1:length(ClassChoice[[2]][[3]][[i]])){
+      
+       for(t in 1:length(ClassChoice[[2]][[3]][[i]][[j]])){
+         
+         if(length(ClassChoice[[2]][[3]][[i]][[j]])!=0){
+         
+    temp<-nrow(flatdf)+1
+      flatdf[temp,"Term"] <- ClassChoice[[2]][[1]][[i]]
+      flatdf[temp,"Title"] <- ClassChoice[[2]][[3]][[i]][[j]][[t]]
+      flatdf[temp,"Year"] <- ClassChoice[[2]][[5]][[i]][[j]][[t]]
+      flatdf[temp,"Citat.Norm"] <- ClassChoice[[2]][[4]][[i]][[j]][[t]]
+      print(paste0(i,",",j,",",t,",",nrow(flatdf)))
+      }else{
+        flatdf[temp,"Title"] <- NA
+      flatdf[temp,"Year"] <- NA
+      flatdf[temp,"Citat.Norm"] <- NA
+      print(paste0("Zero Error:",i,",",j,",",t,",",nrow(flatdf)))       
+      }
+    }}}
+return(na.omit(flatdf))
+}
+#Now apply the function
+flatdf<-flat.extr(ClassChoice)
+```
+
+Preprocessing and saving the flat df table
+```{r}
+# Identifying duplicate rows (considering all columns)   
+remove_duplicate_rows <- function(dataframe){
+  #Keeping the first occurrence and removing the rest
+  dataframe[!duplicated(dataframe), ]
+  }  
+#Use the function to remove duplicate rows  
+flatdf <- remove_duplicate_rows(flatdf)
+flatdf<-flatdf %>% mutate(across(everything(), ~na_if(., "NA"))) %>% #make sure NAs aren't just strings
+  na.omit() %>% mutate(across(c("Year", "Citat.Norm"), as.numeric))
+
+#Save as RDS object
+rio::export(flatdf,paste0("../input/","ClassChoice[[1]],"_Flat.RDS"))
+```
+
+Transform and analyze
+```{r}
+length(unique(flatdf$Title))
+#Calculate the percent of duplicated overlapping categories:
+perc.dupl<-(sum(duplicated(flatdf$Title))/length(flatdf$Title))*100
+
+#Make article titles unique
+flat_wide<- flatdf %>% pivot_wider(names_from = "Term", 
+              names_prefix = "Split:",
+              values_from = "Term")
+
+#Make an analysis, highlighting single discipline vs multidisciplinary research
+#Split table:
+flat_single <- flatdf %>%
+  group_by(Title) %>%
+  filter(n() == 1) %>%
+  ungroup()
+#Test
+sum(duplicated(flat_single$Title))
+
+flat_multi <- flatdf %>%
+  group_by(Title) %>%
+  filter(n() > 1) %>%
+  distinct(Title, .keep_all = TRUE) %>%
+  ungroup()
+#Test
+sum(duplicated(flat_single$Title))
+intersect(flat_multi$Title, flat_single$Title)
+
+#Compare multidisciplinary and single discipline research
+t.test(flat_multi$Citat.Norm,flat_single$Citat.Norm)
+
+
+```
+Graphical exploration, created with esquisse - For the "Discipline term":
+
+```{r}
+
+library(ggplot2)
+
+ggplot(flatdf) +
+ aes(x = Term) +
+ geom_bar(fill = "#112446") +
+ theme_minimal()
+
+ggplot(flatdf) +
+ aes(x = Year, fill = Term) +
+ geom_histogram(bins = 30L) +
+ scale_fill_hue(direction = 1) +
+ theme_minimal()
+
+ggplot(flatdf) +
+ aes(x = Year, fill = Term) +
+ geom_histogram(bins = 30L) +
+ scale_fill_hue(direction = 1) +
+ theme_minimal()
+
+ggplot(flatdf) +
+ aes(x = Citat.Norm, fill = Term) +
+ geom_histogram(bins = 30L) +
+ scale_fill_hue(direction = 1) +
+ theme_minimal()
+
+ggplot(flatdf) +
+ aes(x = Year, y = Citat.Norm, colour = Term) +
+ geom_point(shape = "circle", size = 4L) +
+ scale_color_hue(direction = 1) +
+ theme_minimal()
+
+
+```
